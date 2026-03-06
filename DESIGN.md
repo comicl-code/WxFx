@@ -2,9 +2,7 @@
 
 ## Overview
 
-Add a weather forecast analyzer to LightningMax that pulls NWS numerical model data and text forecasts for targeted locations. Phase 1 focuses on the southern plains (Oklahoma City, Tulsa, Springfield MO, Dallas TX) and Disney World (detailed multi-point coverage).
-
-This extends the existing Next.js app with a new `/weather` section alongside the existing Disney trip optimizer.
+WxFx is a weather forecast analyzer that pulls NWS numerical model data and text forecasts for targeted locations. Phase 1 focuses on the southern plains (Oklahoma City, Tulsa, Springfield MO, Dallas TX) and Disney World (detailed multi-point coverage).
 
 ---
 
@@ -76,12 +74,7 @@ WDW parks share the same NWS grid office (Melbourne, FL) but have distinct gridp
    - 7-day text forecast from NWS (the 12-hour period summaries)
    - Detailed hourly data table (temp, precip %, wind, sky cover)
 
-3. **Disney World integration** — On existing `/day/[date]` pages, show weather conditions for that day's park:
-   - Morning/afternoon/evening temp + precip summary
-   - Rain risk flag if any hour in the itinerary window exceeds 40% precip probability
-   - Link to full weather detail page
-
-4. **Severe weather prominence** — Active tornado/severe thunderstorm warnings should be visually prominent (red banner) on both the dashboard and detail pages
+3. **Severe weather prominence** — Active tornado/severe thunderstorm warnings should be visually prominent (red banner) on both the dashboard and detail pages
 
 5. **Data freshness indicator** — Show when data was last fetched and when NWS last updated the forecast
 
@@ -90,9 +83,9 @@ WDW parks share the same NWS grid office (Melbourne, FL) but have distinct gridp
 1. **Caching**: NWS data cached server-side (Next.js `revalidate`) at 15-minute intervals. NWS updates forecasts every 1–2 hours; 15 min is a good balance.
 2. **Alerts polling**: Alerts should poll more frequently — 5-minute `revalidate` for the alerts endpoint.
 3. **Mobile responsive**: All weather pages must work well on mobile (cards stack, tables scroll horizontally).
-4. **NWS User-Agent compliance**: All server-side requests include `User-Agent: LightningMax/1.0 (contact@example.com)` — configurable via env var.
+4. **NWS User-Agent compliance**: All server-side requests include a `User-Agent` header with app name and contact email — configurable via `NWS_USER_AGENT` env var (defaults to `WxFx/1.0`).
 5. **Graceful degradation**: If NWS API is down, show stale cached data with a "data may be outdated" warning.
-6. **No client-side NWS calls**: All NWS requests go through our API routes (same pattern as existing queue-times proxy) to avoid CORS and enable caching.
+5. **No client-side NWS calls**: All NWS requests go through internal API routes to avoid CORS and enable caching.
 
 ---
 
@@ -134,12 +127,10 @@ WDW parks share the same NWS grid office (Melbourne, FL) but have distinct gridp
 │    WeatherDetail.tsx          Single-location deep dive          │
 │    HourlyTimeline.tsx         Visual hourly temp+precip bar      │
 │    AlertBanner.tsx            Severe weather warning banner       │
-│    WeatherSummaryCard.tsx     Compact card for day pages          │
 │                                                                 │
 │  pages                                                          │
 │    app/weather/page.tsx             Dashboard (all locations)    │
 │    app/weather/[locationId]/page.tsx Location detail             │
-│    app/day/[date]/page.tsx          Existing — add weather card  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -147,7 +138,7 @@ WDW parks share the same NWS grid office (Melbourne, FL) but have distinct gridp
 
 ## Data Layer Design
 
-### Location Config (`data/weatherLocations.ts`)
+### Location Config (`data/locations.ts`)
 
 ```typescript
 interface WeatherLocation {
@@ -156,15 +147,12 @@ interface WeatherLocation {
   shortName: string;             // 'OKC'
   lat: number;
   lon: number;
-  gridOffice: string;            // 'OUN' — resolved once from /points, then hardcoded
-  gridX: number;                 // resolved once from /points, then hardcoded
-  gridY: number;
   region: 'southern-plains' | 'wdw';
-  parkId?: ParkId;               // links to existing park system for WDW locations
+  state: string;
 }
 ```
 
-We resolve `gridOffice`/`gridX`/`gridY` once manually via the `/points` endpoint and hardcode them — no need to call `/points` at runtime.
+Grid coordinates (`gridOffice`/`gridX`/`gridY`) are resolved at runtime via the NWS `/points` endpoint and cached in-memory per process lifetime.
 
 ### NWS API Client (`lib/api/nwsWeather.ts`)
 
@@ -236,16 +224,16 @@ interface LocationWeather {
 | **Environment variables** | `NWS_USER_AGENT` — required contact string for NWS API compliance. Set in Vercel dashboard. |
 | **No API keys needed** | NWS API is free and keyless. No secrets to manage. |
 | **Bandwidth** | NWS gridpoint responses are ~50–100KB each. With 8 locations × 4 endpoints = 32 upstream requests per cache cycle. Negligible. |
-| **Domain** | Deploy alongside existing app — weather is just new routes under `/weather`. No separate deployment needed. |
+| **Domain** | Standalone deployment — weather routes under `/weather`. |
 | **Preview deployments** | Vercel auto-creates previews for PRs — weather routes work out of the box since NWS API has no origin restrictions server-side. |
 
 ---
 
-## File Structure (new files only)
+## File Structure
 
 ```
 data/
-  weatherLocations.ts            # Location configs with pre-resolved grid coords
+  locations.ts                   # Location configs with lat/lon coordinates
 
 types/
   weather.ts                     # HourlyCondition, DayForecast, WeatherAlert, etc.
@@ -270,7 +258,6 @@ components/weather/
   WeatherDetail.tsx              # Full location detail view
   HourlyTimeline.tsx             # Visual hourly forecast bar/chart
   AlertBanner.tsx                # Severe weather alert banner
-  DayWeatherSummary.tsx          # Compact card for Disney day pages
 
 app/weather/
   page.tsx                       # Dashboard page
@@ -282,16 +269,13 @@ app/weather/
 
 ## Implementation Order
 
-1. **Types + location config** — `types/weather.ts`, `data/weatherLocations.ts` (resolve grid coords for all 8 locations)
+1. **Types + location config** — `types/weather.ts`, `data/locations.ts`
 2. **NWS API client** — `lib/api/nwsWeather.ts` with unit conversion and error handling
 3. **API proxy routes** — `app/api/weather/[locationId]/*` with `revalidate` caching
 4. **SWR hooks** — `hooks/useWeather.ts`, `hooks/useWeatherAlerts.ts`
 5. **Weather dashboard** — `app/weather/page.tsx` + `WeatherDashboard` + `LocationWeatherCard`
 6. **Location detail page** — `app/weather/[locationId]/page.tsx` + `WeatherDetail` + `HourlyTimeline`
 7. **Alert system** — `AlertBanner` + `useWeatherAlerts` integration
-8. **Disney day page integration** — Add `DayWeatherSummary` to existing `/day/[date]` pages
-9. **Navigation** — Add weather link to existing `TripNav`
-
 ---
 
 ## Open Questions
